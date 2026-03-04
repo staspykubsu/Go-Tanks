@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Go Tanks</title>
+    <style>
+        canvas { border: 1px solid #333; background: #eee; }
+        body { font-family: sans-serif; text-align: center; }
+        #container { display: flex; justify-content: center; gap: 20px; }
+        #gameArea { position: relative; }
+        #loginOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        #loginBox {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        #rating {
+            width: 300px;
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+        }
+        #rating h3 { margin-top: 0; }
+        #rating table { width: 100%; border-collapse: collapse; }
+        #rating th, #rating td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        #rating tr:hover { background-color: #f0f0f0; }
+        .current-player { font-weight: bold; color: green; }
+        #roundInfo {
+            font-size: 18px;
+            font-weight: bold;
+            margin: 10px 0;
+            color: #333;
+        }
+        .obstacle { background-color: #8B4513; }
+    </style>
+</head>
+<body>
+    <div id="loginOverlay">
+        <div id="loginBox">
+            <h2>Вход в игру</h2>
+            <p>Введите ваше имя:</p>
+            <input type="text" id="playerName" placeholder="Ваше имя" maxlength="20">
+            <br><br>
+            <button onclick="joinGame()">Войти в игру</button>
+        </div>
+    </div>
+
+    <h1>Go Tanks!</h1>
+    
+    <div id="roundInfo">Раунд: <span id="roundNumber">1</span></div>
+    
+    <div id="container">
+        <div id="gameArea">
+            <canvas id="gameCanvas" width="400" height="400"></canvas>
+        </div>
+        
+        <div id="rating">
+            <h3>🏆 Рейтинг игроков</h3>
+            <div id="ratingTable">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Игрок</th>
+                            <th>Победы</th>
+                            <th>Серия</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ratingBody">
+                    </tbody>
+                </table>
+            </div>
+            <p style="font-size: 12px; color: #666; margin-top: 15px;">
+                Управление: Стрелки для движения, Пробел для стрельбы
+            </p>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const CELL_SIZE = 20;
+        let socket = null;
+        let gameState = null;
+        let myId = null;
+        let myName = null;
+        let ratingData = [];
+        let currentRound = 1;
+
+        function joinGame() {
+            const playerName = document.getElementById('playerName').value.trim();
+            if (!playerName) {
+                alert('Пожалуйста, введите имя');
+                return;
+            }
+            
+            myName = playerName;
+            document.getElementById('loginOverlay').style.display = 'none';
+            
+            socket = new WebSocket("ws://" + window.location.host + "/ws");
+            
+            socket.onopen = function() {
+                socket.send(JSON.stringify({type: "join", name: playerName}));
+            };
+
+            socket.onmessage = function(event) {
+                const msg = JSON.parse(event.data);
+                
+                switch(msg.type) {
+                    case "init":
+                        myId = msg.id;
+                        console.log("Connected as:", msg.name, "ID:", msg.id);
+                        break;
+                        
+                    case "state":
+                        gameState = msg.state;
+                        currentRound = msg.state.round;
+                        document.getElementById('roundNumber').textContent = currentRound;
+                        draw();
+                        break;
+                        
+                    case "rating":
+                        ratingData = msg.rating;
+                        updateRatingTable();
+                        break;
+                        
+                    case "dead":
+                        console.log("You were killed");
+                        break;
+                        
+                    case "error":
+                        alert("Ошибка: " + msg.error);
+                        break;
+                }
+            };
+
+            socket.onerror = function(err) {
+                console.error("WebSocket error:", err);
+                alert("Ошибка подключения к серверу");
+            };
+
+            socket.onclose = function() {
+                alert("Соединение разорвано");
+                location.reload();
+            };
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (!gameState) return;
+
+            if (gameState.obstacles) {
+                gameState.obstacles.forEach(obs => {
+                    ctx.fillStyle = '#8B4513';
+                    ctx.fillRect(
+                        obs.x * CELL_SIZE,
+                        obs.y * CELL_SIZE,
+                        obs.width * CELL_SIZE,
+                        obs.height * CELL_SIZE
+                    );
+                    
+                    ctx.strokeStyle = '#000';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(
+                        obs.x * CELL_SIZE,
+                        obs.y * CELL_SIZE,
+                        obs.width * CELL_SIZE,
+                        obs.height * CELL_SIZE
+                    );
+                });
+            }
+
+            for (let id in gameState.players) {
+                let p = gameState.players[id];
+                if (!p.alive) continue;
+                
+                if (id === myId) {
+                    ctx.fillStyle = "green";
+                } else {
+                    ctx.fillStyle = "red";
+                }
+                
+                ctx.fillRect(p.pos.x * CELL_SIZE, p.pos.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                
+                ctx.fillStyle = "black";
+                ctx.font = "10px Arial";
+                ctx.textAlign = "center";
+                ctx.fillText(
+                    p.name || "Player",
+                    p.pos.x * CELL_SIZE + CELL_SIZE/2,
+                    p.pos.y * CELL_SIZE - 5
+                );
+                
+                ctx.fillStyle = "white";
+                let dx = p.dir.x * 6;
+                let dy = p.dir.y * 6;
+                ctx.fillRect(
+                    (p.pos.x * CELL_SIZE) + 7 + dx, 
+                    (p.pos.y * CELL_SIZE) + 7 + dy, 
+                    6, 6
+                );
+            }
+
+            ctx.fillStyle = "black";
+            gameState.bullets.forEach(b => {
+                ctx.beginPath();
+                ctx.arc(
+                    b.x * CELL_SIZE + CELL_SIZE/2,
+                    b.y * CELL_SIZE + CELL_SIZE/2,
+                    3, 0, Math.PI * 2
+                );
+                ctx.fill();
+            });
+        }
+
+        function updateRatingTable() {
+            const tbody = document.getElementById('ratingBody');
+            tbody.innerHTML = '';
+            
+            ratingData.sort((a, b) => {
+                if (b.wins !== a.wins) {
+                    return b.wins - a.wins;
+                }
+                return a.name.localeCompare(b.name);
+            });
+            
+            ratingData.forEach(player => {
+                const row = document.createElement('tr');
+                
+                if (player.name === myName) {
+                    row.classList.add('current-player');
+                }
+                
+                row.innerHTML = `
+                    <td>${player.name}</td>
+                    <td>${player.wins}</td>
+                    <td>${player.streak}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+            
+            let action = "";
+            if (e.code === "ArrowUp") action = "up";
+            if (e.code === "ArrowDown") action = "down";
+            if (e.code === "ArrowLeft") action = "left";
+            if (e.code === "ArrowRight") action = "right";
+            if (e.code === "Space") {
+                action = "shoot";
+                e.preventDefault();
+            }
+
+            if (action) {
+                socket.send(JSON.stringify({type: "action", action: action}));
+            }
+        });
+
+        document.getElementById('playerName').focus();
+        document.getElementById('playerName').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                joinGame();
+            }
+        });
+    </script>
+</body>
+</html>
